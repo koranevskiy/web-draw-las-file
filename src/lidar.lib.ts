@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import {OrbitControls} from 'three/examples/jsm/Addons.js';
+import {delay} from "./utils.ts";
 
 export const parseHeaderLas1v2 = async (file: File) => {
     const headerSize = new DataView(await file.slice(94, 100).arrayBuffer()).getUint16(0, true);
@@ -88,6 +89,7 @@ export const parsePointsLasFile1v2 = async (file: File, pointPacketLength: numbe
             const point = parsePointForLas1v2(dataView, scaleFactor, offsetXYZ, size, offset)
             pointsPacket.push(point)
         }
+        await delay()
         onPacketParse(pointsPacket)
 
         offsetBytesStart = offsetBytesEnd;
@@ -107,41 +109,77 @@ export class LidarDrawer {
 
     private orbitControl: OrbitControls = null!
 
+    private readonly fov = 75;
+
+    private near = 0.1;
+
+    private far = 5000;
+
+    private hFov = 1;
+
+    private readonly aspectRatio: number;
+
     constructor(private readonly canvas: HTMLCanvasElement) {
         this.renderer = new THREE.WebGLRenderer({
             canvas
         })
         this.scene = new THREE.Scene();
-        this.camera = new THREE.PerspectiveCamera(75, canvas.clientWidth / canvas.clientHeight, 0.1, 5000);
+        this.aspectRatio = canvas.clientWidth / canvas.clientHeight;
+        this.camera = new THREE.PerspectiveCamera(this.fov, this.aspectRatio, this.near, this.far);
+        this.setHFov(this.camera.fov)
+    }
+
+    private setHFov(vFov: number) {
+        const radFov = this.getRadian(this.fov);
+        this.hFov = 2 * Math.atan(Math.tan(radFov / 2) * this.aspectRatio);
+
+    }
+
+    private getRadian(x: number) {
+        return (Math.PI / 180) * x;
+    }
+
+    private calculateCameraPosition(min: XYZ, max: XYZ) {
+        const height = max[1] - min[1];
+        const width = max[0] - min[0];
+        const depth = max[2] - min[2];
+        const x = max[0] - width / 2;
+        const y = max[1] - height / 2;
+        const z = max[2];
+
+        const widthZ = 1.1 * Math.abs((width / 2) / Math.tan(this.hFov / 2));
+        const heightZ = 1.1 * Math.abs((height / 2) / Math.tan(this.getRadian(this.fov) / 2));
+        const newZ = z + Math.max(widthZ, heightZ);
+
+        const position = {
+            x, y, z: newZ
+        }
+
+        return position;
     }
 
     private setCamera(min: XYZ, max: XYZ) {
-        const x = max[0] - (max[0] - min[0]) / 2
-        const y = max[1] - (max[1] - min[1]) / 2
-        this.camera.position.z = max[2] + 300;
-        this.camera.position.x = max[0] - (max[0] - min[0]) / 2;
-        this.camera.position.y = max[1] - (max[1] - min[1]) / 2;
 
-        this.camera.rotation.x = 0
-        this.camera.rotation.y = 0
-        this.camera.rotation.z = 0.5
-        this.camera.lookAt(x, y, min[2])
-
+        const { x, y, z } = this.calculateCameraPosition(min, max);
+        this.camera.position.z = z;
+        this.camera.position.x = x;
+        this.camera.position.y = y;
         this.orbitControl = new OrbitControls(this.camera, this.canvas);
-        this.orbitControl.target.set(x, y, min[2])
+        this.orbitControl.target.set(x, y, max[2])
+        // this.renderer.setScissorTest(true)
         this.orbitControl.update()
     }
 
 
     public drawLimitBox(min: XYZ, max: XYZ) {
-        const width = (max[0] - min[0]) / 2;
-        const height = (max[1] - min[1]) / 2;
-        const depth = (max[2] - min[2]) / 2;
+        const width = (max[0] - min[0]);
+        const height = (max[1] - min[1]);
+        const depth = (max[2] - min[2]);
         const box = new THREE.BoxGeometry(width, height, depth, width, height, depth);
 
         const edges = new THREE.EdgesGeometry(box);
         const line = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({color: 0xffffff}));
-        line.position.set(max[0] - width, max[1] - height, max[2] - depth);
+        line.position.set(max[0] - width / 2, max[1] - height / 2, max[2] - depth / 2);
         this.scene.add(line)
 
         const color = 0xFFFFFF;
@@ -149,13 +187,15 @@ export class LidarDrawer {
         const light = new THREE.AmbientLight(color, intensity);
         this.scene.add(light);
 
+        // const radius = box.boundingSphere!.radius;
+        // const cog = line.localToWorld(box.boundingSphere!.center.clone());
+        // const fov = this.camera.fov;
+        // this.camera.position.set( cog.x, cog.y, cog.z + 1.1*radius/Math.tan(fov*Math.PI/360) );
+
         this.setCamera(min, max)
         // this.renderer.render(this.scene, this.camera);
 
         const animate = () => {
-            // this.camera.rotation.y += 0.01
-            // this.camera.rotation.x += 0.01
-            // this.camera.rotation.z += 0.01
             this.renderer.render(this.scene, this.camera);
             requestAnimationFrame(animate)
         }

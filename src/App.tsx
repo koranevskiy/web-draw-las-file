@@ -1,7 +1,4 @@
 import { useRef, useState} from "react";
-import * as THREE from "three";
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import {Vector3} from "three";
 import {LidarDrawer, parseHeaderLas1v2, parsePointsLasFile1v2} from "./lidar.lib.ts";
 
 function App() {
@@ -12,7 +9,7 @@ function App() {
     const onUploadClickHandler = async () => {
         if (!file) return alert('Please select a LAS file.');
         const header = await parseHeaderLas1v2(file);
-        const PACKET_SIZE = 10_000;
+        const PACKET_SIZE = 100_000;
         const drawer = new LidarDrawer(canvasRef.current!);
         drawer.drawLimitBox(header.xyz.min, header.xyz.max);
         await parsePointsLasFile1v2(file, PACKET_SIZE, header, (packet) => {
