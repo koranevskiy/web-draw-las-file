@@ -8,6 +8,8 @@ export const parseHeaderLas1v2 = async (file: File) => {
     const headerFixedData = new DataView(await file.slice(0, headerSize).arrayBuffer())
 
     const xyzOffset = 131;
+    const max = [+headerFixedData.getFloat64(xyzOffset + 8 * 6, true).toFixed(2), +headerFixedData.getFloat64(xyzOffset + 8 * 8, true).toFixed(2), +headerFixedData.getFloat64(xyzOffset + 8 * 10, true).toFixed(2)] as XYZ
+    const min = [+headerFixedData.getFloat64(xyzOffset + 8 * 7, true).toFixed(2), +headerFixedData.getFloat64(xyzOffset + 8 * 9, true).toFixed(2), +headerFixedData.getFloat64(xyzOffset + 8 * 11, true).toFixed(2)] as XYZ
 
     return {
         headerSize,
@@ -20,8 +22,10 @@ export const parseHeaderLas1v2 = async (file: File) => {
         xyz: {
             scaleFactor: [headerFixedData.getFloat64(xyzOffset, true), headerFixedData.getFloat64(xyzOffset + 8, true), headerFixedData.getFloat64(xyzOffset + 8 * 2, true)] as XYZ,
             offset: [headerFixedData.getFloat64(xyzOffset + 8 * 3, true), headerFixedData.getFloat64(xyzOffset + 8 * 4, true), headerFixedData.getFloat64(xyzOffset + 8 * 5, true)] as XYZ,
-            max: [+headerFixedData.getFloat64(xyzOffset + 8 * 6, true).toFixed(2), +headerFixedData.getFloat64(xyzOffset + 8 * 8, true).toFixed(2), +headerFixedData.getFloat64(xyzOffset + 8 * 10, true).toFixed(2)] as XYZ,
-            min: [+headerFixedData.getFloat64(xyzOffset + 8 * 7, true).toFixed(2), +headerFixedData.getFloat64(xyzOffset + 8 * 9, true).toFixed(2), +headerFixedData.getFloat64(xyzOffset + 8 * 11, true).toFixed(2)] as XYZ,
+            min,
+            minNormalized: [0, 0, 0] as XYZ,
+            max,
+            maxNormalized: [toSecondSign(max[0] - min[0]), toSecondSign(max[1] - min[1]), toSecondSign(max[2] - min[2])] as XYZ,
         }
     }
 }
@@ -41,16 +45,23 @@ export const unscaleCoordinate = (xyz: XYZ, scaleFactorXYZ: XYZ, offsetXYZ: XYZ)
     ]
 }
 
+const toSecondSign = (value: number) => {
+    return +value.toFixed(2)
+}
 // для примера поддержка только точек Format Id = 3 // в примере файла точки 3 типа
 export const parsePointForLas1v2 = (dataView: DataView,
                                     scaleFactorXYZ: XYZ, offsetXYZ: XYZ,
                                     pointSize: number,
+                                    header: HeaderLas1v2,
                                     offset = 0) => {
     const xyz = [dataView.getInt32(offset, true), dataView.getInt32(offset + 4, true), dataView.getInt32(offset + 8, true)] as XYZ;
     const colorNormalize = 65535;
     const rgb = [dataView.getUint16(offset + pointSize - 6, true) / colorNormalize, dataView.getUint16(offset + pointSize - 4, true) / colorNormalize, dataView.getUint16(offset + pointSize - 2, true) / colorNormalize];
+    const unscaled = unscaleCoordinate(xyz, scaleFactorXYZ, offsetXYZ) as XYZ;
+
     return {
-        xyz: unscaleCoordinate(xyz, scaleFactorXYZ, offsetXYZ) as XYZ,
+        xyz: unscaled,
+        normalized: [toSecondSign(unscaled[0] - header.xyz.min[0]), toSecondSign(unscaled[1] - header.xyz.min[1]), toSecondSign(unscaled[2] - header.xyz.min[2])] as XYZ,
         rgb: rgb as XYZ
     }
 }
@@ -70,18 +81,17 @@ export const parsePointsLasFile1v2 = async (file: File, pointPacketLength: numbe
 
     let offsetBytesStart = offsetToPoints;
     let offsetBytesEnd = offsetToPoints + packetSize > pointsSize ? pointsSize : offsetToPoints + packetSize;
-
     for (let i = 0; i < finallyPacketsLength; ++i) {
         const dataView = new DataView(await file.slice(offsetBytesStart, offsetBytesEnd).arrayBuffer())
         const pointBufferLength = (offsetBytesEnd - offsetBytesStart) / size
         const pointsPacket: PointPacket = [];
         for (let j = 0, offset = 0; j < pointBufferLength; ++j, offset += size) {
-            const point = parsePointForLas1v2(dataView, scaleFactor, offsetXYZ, size, offset)
+            const point = parsePointForLas1v2(dataView, scaleFactor, offsetXYZ, size, header, offset)
             pointsPacket.push(point)
         }
         await delay()
         onPacketParse(pointsPacket)
-
+        await delay()
         offsetBytesStart = offsetBytesEnd;
         const incrementOffsetEnd = offsetBytesEnd + packetSize;
         offsetBytesEnd = incrementOffsetEnd > pointsSize ? pointsSize : incrementOffsetEnd;
@@ -183,9 +193,8 @@ export class LidarDrawer {
         const vertex = new Float32Array(packet.length * 3);
         const colors = new Float32Array(packet.length * 3);
         const triangleCoords = new Float32Array(packet.length * 2);
-
         for (let i = 0; i < packet.length; i++) {
-            const {xyz, rgb} = packet[i]
+            const {normalized: xyz, rgb} = packet[i]
             vertex[i * 3] = xyz[0]
             triangleCoords[i * 2] = xyz[0]
             vertex[i * 3 + 1] = xyz[1]
@@ -195,7 +204,6 @@ export class LidarDrawer {
             colors[i * 3 + 1] = rgb[1]
             colors[i * 3 + 2] = rgb[2]
         }
-        // const indexDelaunau = Delaunator.from(packet.map(a => [a.xyz[0], a.xyz[1]]));
         const indexDelaunau = new Delaunator(triangleCoords);
         const geom = new THREE.BufferGeometry();
 

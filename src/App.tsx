@@ -9,11 +9,12 @@ function App() {
     const onUploadClickHandler = async () => {
         if (!file) return alert('Please select a LAS file.');
         const header = await parseHeaderLas1v2(file);
-        const PACKET_SIZE = 30_000_000;
+        const PACKET_SIZE = 1_000_000;
         // const PACKET_SIZE = Math.floor(48632279 / 3) + 1;
         const drawer = new LidarDrawer(canvasRef.current!);
-        drawer.drawLimitBox(header.xyz.min, header.xyz.max);
+        drawer.drawLimitBox(header.xyz.minNormalized, header.xyz.maxNormalized);
         console.log(header)
+
         await parsePointsLasFile1v2(file, PACKET_SIZE, header, (packet) => {
             drawer.drawPacket(packet);
         })
