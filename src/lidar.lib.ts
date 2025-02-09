@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import {OrbitControls} from 'three/examples/jsm/Addons.js';
 import {delay} from "./utils.ts";
+import Delaunator from 'delaunator'
 
 export const parseHeaderLas1v2 = async (file: File) => {
     const headerSize = new DataView(await file.slice(94, 100).arrayBuffer()).getUint16(0, true);
@@ -19,8 +20,8 @@ export const parseHeaderLas1v2 = async (file: File) => {
         xyz: {
             scaleFactor: [headerFixedData.getFloat64(xyzOffset, true), headerFixedData.getFloat64(xyzOffset + 8, true), headerFixedData.getFloat64(xyzOffset + 8 * 2, true)] as XYZ,
             offset: [headerFixedData.getFloat64(xyzOffset + 8 * 3, true), headerFixedData.getFloat64(xyzOffset + 8 * 4, true), headerFixedData.getFloat64(xyzOffset + 8 * 5, true)] as XYZ,
-            max: [headerFixedData.getFloat64(xyzOffset + 8 * 6, true), headerFixedData.getFloat64(xyzOffset + 8 * 8, true), headerFixedData.getFloat64(xyzOffset + 8 * 10, true)] as XYZ,
-            min: [headerFixedData.getFloat64(xyzOffset + 8 * 7, true), headerFixedData.getFloat64(xyzOffset + 8 * 9, true), headerFixedData.getFloat64(xyzOffset + 8 * 11, true)] as XYZ,
+            max: [+headerFixedData.getFloat64(xyzOffset + 8 * 6, true).toFixed(2), +headerFixedData.getFloat64(xyzOffset + 8 * 8, true).toFixed(2), +headerFixedData.getFloat64(xyzOffset + 8 * 10, true).toFixed(2)] as XYZ,
+            min: [+headerFixedData.getFloat64(xyzOffset + 8 * 7, true).toFixed(2), +headerFixedData.getFloat64(xyzOffset + 8 * 9, true).toFixed(2), +headerFixedData.getFloat64(xyzOffset + 8 * 11, true).toFixed(2)] as XYZ,
         }
     }
 }
@@ -34,9 +35,9 @@ type XYZ = [number, number, number];
  */
 export const unscaleCoordinate = (xyz: XYZ, scaleFactorXYZ: XYZ, offsetXYZ: XYZ) => {
     return [
-        xyz[0] * scaleFactorXYZ[0] + offsetXYZ[0],
-        xyz[1] * scaleFactorXYZ[1] + offsetXYZ[1],
-        xyz[2] * scaleFactorXYZ[2] + offsetXYZ[2],
+        +(xyz[0] * scaleFactorXYZ[0] + offsetXYZ[0]).toFixed(2),
+        +(xyz[1] * scaleFactorXYZ[1] + offsetXYZ[1]).toFixed(2),
+        +(xyz[2] * scaleFactorXYZ[2] + offsetXYZ[2]).toFixed(2),
     ]
 }
 
@@ -70,17 +71,6 @@ export const parsePointsLasFile1v2 = async (file: File, pointPacketLength: numbe
     let offsetBytesStart = offsetToPoints;
     let offsetBytesEnd = offsetToPoints + packetSize > pointsSize ? pointsSize : offsetToPoints + packetSize;
 
-    console.log({
-        size,
-        pointPacketLength,
-        packetSize,
-        pointsSize,
-        quantity,
-        finallyPacketsLength
-    })
-
-    console.log({offsetBytesStart, offsetBytesEnd})
-    console.log('===================================================')
     for (let i = 0; i < finallyPacketsLength; ++i) {
         const dataView = new DataView(await file.slice(offsetBytesStart, offsetBytesEnd).arrayBuffer())
         const pointBufferLength = (offsetBytesEnd - offsetBytesStart) / size
@@ -130,7 +120,7 @@ export class LidarDrawer {
     }
 
     private setHFov(vFov: number) {
-        const radFov = this.getRadian(this.fov);
+        const radFov = this.getRadian(vFov);
         this.hFov = 2 * Math.atan(Math.tan(radFov / 2) * this.aspectRatio);
 
     }
@@ -142,31 +132,24 @@ export class LidarDrawer {
     private calculateCameraPosition(min: XYZ, max: XYZ) {
         const height = max[1] - min[1];
         const width = max[0] - min[0];
-        const depth = max[2] - min[2];
         const x = max[0] - width / 2;
         const y = max[1] - height / 2;
         const z = max[2];
-
         const widthZ = 1.1 * Math.abs((width / 2) / Math.tan(this.hFov / 2));
         const heightZ = 1.1 * Math.abs((height / 2) / Math.tan(this.getRadian(this.fov) / 2));
         const newZ = z + Math.max(widthZ, heightZ);
-
-        const position = {
+        return {
             x, y, z: newZ
-        }
-
-        return position;
+        };
     }
 
     private setCamera(min: XYZ, max: XYZ) {
-
-        const { x, y, z } = this.calculateCameraPosition(min, max);
+        const {x, y, z} = this.calculateCameraPosition(min, max);
         this.camera.position.z = z;
         this.camera.position.x = x;
         this.camera.position.y = y;
         this.orbitControl = new OrbitControls(this.camera, this.canvas);
         this.orbitControl.target.set(x, y, max[2])
-        // this.renderer.setScissorTest(true)
         this.orbitControl.update()
     }
 
@@ -186,40 +169,151 @@ export class LidarDrawer {
         const intensity = 1;
         const light = new THREE.AmbientLight(color, intensity);
         this.scene.add(light);
-
-        // const radius = box.boundingSphere!.radius;
-        // const cog = line.localToWorld(box.boundingSphere!.center.clone());
-        // const fov = this.camera.fov;
-        // this.camera.position.set( cog.x, cog.y, cog.z + 1.1*radius/Math.tan(fov*Math.PI/360) );
-
         this.setCamera(min, max)
-        // this.renderer.render(this.scene, this.camera);
 
         const animate = () => {
             this.renderer.render(this.scene, this.camera);
             requestAnimationFrame(animate)
         }
-        animate()
 
+        animate()
     }
 
     public drawPacket(packet: PointPacket) {
         const vertex = new Float32Array(packet.length * 3);
         const colors = new Float32Array(packet.length * 3);
+        const triangleCoords = new Float32Array(packet.length * 2);
+
         for (let i = 0; i < packet.length; i++) {
             const {xyz, rgb} = packet[i]
             vertex[i * 3] = xyz[0]
+            triangleCoords[i * 2] = xyz[0]
             vertex[i * 3 + 1] = xyz[1]
+            triangleCoords[i * 2 + 1] = xyz[1]
             vertex[i * 3 + 2] = xyz[2]
             colors[i * 3] = rgb[0]// три жс оес хочет нормализованные от 0 до 1
             colors[i * 3 + 1] = rgb[1]
             colors[i * 3 + 2] = rgb[2]
         }
-        const pointsGeometry = new THREE.BufferGeometry();
-        const pointsMaterial = new THREE.PointsMaterial({vertexColors: true, size: 2});
-        pointsGeometry.setAttribute('position', new THREE.BufferAttribute(vertex, 3));
-        pointsGeometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-        const points = new THREE.Points(pointsGeometry, pointsMaterial);
-        this.scene.add(points)
+        // const indexDelaunau = Delaunator.from(packet.map(a => [a.xyz[0], a.xyz[1]]));
+        const indexDelaunau = new Delaunator(triangleCoords);
+        const geom = new THREE.BufferGeometry();
+
+        geom.setAttribute('position', new THREE.BufferAttribute(vertex, 3))
+        geom.setAttribute('color', new THREE.BufferAttribute(colors, 3))
+        const idx: number[] = []
+        for (let i = 0; i < indexDelaunau.triangles.length; i++) {
+            idx.push(indexDelaunau.triangles[i])
+        }
+        geom.setIndex(idx);
+        geom.computeVertexNormals()
+        const material = new THREE.MeshBasicMaterial({
+            vertexColors: true,
+            side: THREE.DoubleSide
+        });
+        const mesh = new THREE.Mesh(geom, material);
+
+        this.scene.add(mesh)
     }
+
+    // public drawPacket(packet: PointPacket) {
+    //     const vertex = new Float32Array(packet.length * 3);
+    //     const colors = new Float32Array(packet.length * 3);
+    //     const delaunatorCords = new Float32Array(packet.length * 2);
+    //
+    //     for (let i = 0; i < packet.length; i++) {
+    //         const {xyz, rgb} = packet[i]
+    //         vertex[i * 3] = xyz[0]
+    //         vertex[i * 3 + 1] = xyz[1]
+    //         vertex[i * 3 + 2] = xyz[2]
+    //         colors[i * 3] = rgb[0]// три жс оес хочет нормализованные от 0 до 1
+    //         colors[i * 3 + 1] = rgb[1]
+    //         colors[i * 3 + 2] = rgb[2]
+    //         delaunatorCords[i * 3] = xyz[0] // x
+    //         delaunatorCords[i * 3 + 2] = xyz[2] // z
+    //     }
+    //
+    //     const indexDelaunau = new Delaunator(delaunatorCords);
+    //     const meshIndex: number[] = []
+    //     for (let i = 0; i < indexDelaunau.triangles.length; i++) {
+    //         meshIndex.push(indexDelaunau.triangles[i]);
+    //     }
+    //     console.log(meshIndex)
+    //     const pointsGeometry = new THREE.BufferGeometry();
+    //
+    //     const pointsMaterial = new THREE.PointsMaterial({vertexColors: true, size: 1});
+    //
+    //     pointsGeometry.setAttribute('position', new THREE.BufferAttribute(vertex, 3));
+    //     pointsGeometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    //     pointsGeometry.setIndex(meshIndex)
+    //     pointsGeometry.computeVertexNormals();
+    //
+    //     const points = new THREE.Points(pointsGeometry, pointsMaterial);
+    //     this.scene.add(points)
+    // }
+
+    private minMax(packet: PointPacket) {
+        let maxX = packet[0].xyz[0], maxY = packet[0].xyz[1], maxZ = packet[0].xyz[2], minX = packet[0].xyz[0],
+            minY = packet[0].xyz[1], minZ = packet[0].xyz[2];
+
+        for (let i = 1; i < packet.length; ++i) {
+            if (packet[i].xyz[0] > maxX) {
+                maxX = packet[i].xyz[0];
+            }
+            if (packet[i].xyz[1] > maxY) {
+                maxY = packet[i].xyz[1];
+            }
+            if (packet[i].xyz[2] > maxZ) {
+                maxZ = packet[i].xyz[2];
+            }
+
+            if (packet[i].xyz[0] < minX) {
+                minX = packet[i].xyz[0];
+            }
+
+            if (packet[i].xyz[1] < minY) {
+                minY = packet[i].xyz[1];
+            }
+
+            if (packet[i].xyz[2] < minZ) {
+                minZ = packet[i].xyz[2];
+            }
+        }
+        return {
+            maxX, maxY, maxZ, minX, minY, minZ
+        }
+    }
+
+    // public drawPacket(packet: PointPacket) {
+    //     const vertex = new Float32Array(packet.length * 3);
+    //     const colors = new Float32Array(packet.length * 3);
+    //
+    //     // Определите минимальные и максимальные значения для координат
+    //     // const {minZ, minY, minX, maxZ, maxY, maxX} = this.minMax(packet);
+    //     const [minX, minY, minZ] = this.min
+    //     const [maxX, maxY, maxZ] = this.max
+    //     const quant = 100
+    //     for (let i = 0; i < packet.length; i++) {
+    //         const {xyz, rgb} = packet[i];
+    //
+    //         // Применяем smoothstep к координатам
+    //         const smoothX = THREE.MathUtils.smoothstep(xyz[0] * quant, minX * quant, maxX * quant) * (maxX - minX) + minX;
+    //         const smoothY = THREE.MathUtils.smoothstep(xyz[1] * quant, minY * quant, maxY * quant) * (maxY - minY) + minY;
+    //         const smoothZ = THREE.MathUtils.smoothstep(xyz[2] * quant, minZ * quant, maxZ * quant) * (maxZ - minZ) + minZ;
+    //         vertex[i * 3] = smoothX;
+    //         vertex[i * 3 + 1] = smoothY;
+    //         vertex[i * 3 + 2] = smoothZ;
+    //
+    //         colors[i * 3] = rgb[0]; // три жс оес хочет нормализованные от 0 до 1
+    //         colors[i * 3 + 1] = rgb[1];
+    //         colors[i * 3 + 2] = rgb[2];
+    //     }
+    //
+    //     const pointsGeometry = new THREE.BufferGeometry();
+    //     const pointsMaterial = new THREE.PointsMaterial({vertexColors: true, size: 2});
+    //     pointsGeometry.setAttribute('position', new THREE.BufferAttribute(vertex, 3));
+    //     pointsGeometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    //     const points = new THREE.Points(pointsGeometry, pointsMaterial);
+    //     this.scene.add(points);
+    // }
 }
